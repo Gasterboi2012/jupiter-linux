@@ -51,6 +51,10 @@ assert_file() {
     if [[ -f $1 ]]; then ok "$2"; else bad "$2 ($1 is missing)"; fi
 }
 
+assert_no_file() {
+    if [[ ! -e $1 ]]; then ok "$2"; else bad "$2 ($1 still exists)"; fi
+}
+
 expect_true() {
     local message=$1
     shift
@@ -125,6 +129,19 @@ expect_false "valid_hostname: leading dash" valid_hostname -jupiter
 expect_false "valid_hostname: trailing dash" valid_hostname jupiter-
 expect_false "valid_hostname: dot" valid_hostname jupiter.local
 
+expect_true "valid_password: hunter2!" valid_password 'hunter2!'
+expect_true "valid_password: spaces" valid_password 'two words'
+expect_false "valid_password: empty" valid_password ""
+expect_false "valid_password: colon" valid_password "a:b"
+expect_false "valid_password: newline" valid_password $'a\nroot:evil'
+expect_false "valid_password: tab" valid_password $'a\tb'
+expect_false "valid_password: too long" valid_password "$(printf 'a%.0s' {1..129})"
+
+expect_true "valid_fullname: Jane Doe" valid_fullname "Jane Doe"
+expect_true "valid_fullname: empty is allowed" valid_fullname ""
+expect_false "valid_fullname: newline" valid_fullname $'Jane\nDoe'
+expect_false "valid_fullname: too long" valid_fullname "$(printf 'a%.0s' {1..65})"
+
 # --- timezones -------------------------------------------------------------
 
 section "timezones"
@@ -151,6 +168,48 @@ european=$(tz_cities Europe)
 assert_contains "Europe/Berlin|most of Germany" "${european}" "city keeps its description"
 assert_contains "Europe/London|GB" "${european}" "missing description falls back to the country code"
 assert_eq "" "$(tz_cities Nowhere)" "unknown regions have no cities"
+assert_eq "DE" "$(tz_country Europe/Berlin)" "a zone carries its country code"
+assert_eq "" "$(tz_country America/Nowhere)" "unknown zones have no country"
+
+# --- languages and keymaps -------------------------------------------------
+
+section "languages and keymaps"
+
+cat >"${TMP_ROOT}/locale.gen" <<'FIXTURE'
+# test fixture
+#en_US.UTF-8 UTF-8
+#de_DE.UTF-8 UTF-8
+#fr_FR.UTF-8 UTF-8
+#C.UTF-8 UTF-8
+FIXTURE
+
+mkdir -p "${TMP_ROOT}/keymaps/i386/qwerty" "${TMP_ROOT}/keymaps/i386/qwertz" \
+    "${TMP_ROOT}/keymaps/mac"
+: >"${TMP_ROOT}/keymaps/i386/qwerty/us.map.gz"
+: >"${TMP_ROOT}/keymaps/i386/qwertz/de-latin1-nodeadkeys.map.gz"
+: >"${TMP_ROOT}/keymaps/mac/mac-us.map.gz"
+
+JUPITER_LOCALE_GEN="${TMP_ROOT}/locale.gen"
+JUPITER_KEYMAP_ROOT="${TMP_ROOT}/keymaps"
+export JUPITER_LOCALE_GEN JUPITER_KEYMAP_ROOT
+# shellcheck source=/dev/null
+source "${PROJECT_DIR}/installer/lib/locale.sh"
+
+locales=$(locale_list)
+assert_contains "en_US.UTF-8" "${locales}" "locale.gen entries are read"
+assert_contains "de_DE.UTF-8" "${locales}" "commented locales are offered too"
+assert_missing "C.UTF-8" "${locales}" "locales without a territory are skipped"
+
+keymaps=$(keymap_list)
+assert_contains "de-latin1-nodeadkeys" "${keymaps}" "PC keymaps are listed"
+assert_contains "us" "${keymaps}" "keymaps are listed by basename"
+assert_missing "mac-us" "${keymaps}" "non-PC keymaps are not offered"
+
+assert_eq "de_DE.UTF-8|de-latin1-nodeadkeys" "$(suggestion_for_country DE)" \
+    "Germany gets German defaults"
+assert_eq "en_US.UTF-8|us" "$(suggestion_for_country JP)" \
+    "countries without those files fall back"
+assert_eq "en_US.UTF-8|us" "$(suggestion_for_country '')" "no country falls back"
 
 # --- wifi parsing ----------------------------------------------------------
 
@@ -173,6 +232,23 @@ assert_eq "HomeNet|81|WPA2" "$(printf '%s\n' "${scan}" | sed -n 1p)" "strongest 
 assert_contains "Cafe:WiFi|72|WPA2" "${scan}" "escaped colons in SSIDs are decoded"
 assert_eq "1" "$(printf '%s\n' "${scan}" | grep -c '^HomeNet|')" "duplicate SSIDs are collapsed"
 assert_contains "OpenNet|55|--" "${scan}" "open networks show no security"
+
+# --- disk descriptions -----------------------------------------------------
+
+section "disk descriptions"
+
+disk_bin="${TMP_ROOT}/disk-bin"
+mkdir -p "${disk_bin}"
+ln -s "${STUBS}/lsblk" "${disk_bin}/lsblk"
+
+described=$(PATH="${disk_bin}:${PATH}" STUB_LOG="${TMP_ROOT}/disk.log" \
+    LSBLK_TYPES=$'disk\npart\npart' LSBLK_FSTYPES=$'ext4\nvfat' \
+    bash -c "source '${PROJECT_DIR}/installer/lib/disk.sh'; _disk_contents /dev/vda")
+assert_eq "2 partition(s): ext4,vfat" "${described}" "disk contents are summarised"
+
+blank=$(PATH="${disk_bin}:${PATH}" STUB_LOG="${TMP_ROOT}/disk.log" LSBLK_TYPES='' \
+    bash -c "source '${PROJECT_DIR}/installer/lib/disk.sh'; _disk_contents /dev/vdb")
+assert_eq "no partitions" "${blank}" "an empty disk is described as empty"
 
 # --- branding --------------------------------------------------------------
 
@@ -303,10 +379,14 @@ run_installer() {
         JUPITER_TEST_NONROOT=1 \
         JUPITER_TEST_UEFI=1 \
         JUPITER_TEST_LIVE_DISK=/dev/sdb \
+        JUPITER_TEST_SKIP_DEVICES=1 \
         JUPITER_MNT="${dir}/mnt" \
         JUPITER_LOG="${dir}/install.log" \
         JUPITER_REPO_SOURCE="${dir}/repo" \
         JUPITER_RUN_DIR="${dir}/run/jupiter" \
+        JUPITER_LOCALE_GEN="${TMP_ROOT}/locale.gen" \
+        JUPITER_KEYMAP_ROOT="${TMP_ROOT}/keymaps" \
+        JUPITER_NM_PROFILES="${dir}/nm" \
         timeout 90 bash "${PROJECT_DIR}/installer/install.sh"
 }
 
@@ -316,8 +396,9 @@ flow_a="${TMP_ROOT}/flow-a"
 make_sandbox "${flow_a}"
 : >"${flow_a}/online"
 cat >"${flow_a}/responses.json" <<'JSON'
-["", "", "/dev/vda", "ERASE", "Europe", "Europe/Berlin", "jane", "Jane Doe",
- "hunter2!", "hunter2!", "locked", "jupiter-box", "mesa", "yes", "shell"]
+["", "", "/dev/vda", "ERASE", "Europe", "Europe/Berlin", "yes",
+ "jane", "Jane Doe", "hunter2!", "hunter2!", "locked",
+ "jupiter-box", "mesa", "yes", "shell"]
 JSON
 
 if run_installer "${flow_a}" 0 "${AMD_LSPCI}" >"${flow_a}/console.log" 2>&1; then
@@ -354,11 +435,22 @@ assert_contains 'USER_FULLNAME=Jane\ Doe' "${post_a}" "full name is passed to th
 assert_contains "HOSTNAME=jupiter-box" "${post_a}" "hostname is passed to the target"
 assert_contains "ROOT_UUID=TEST-UUID-1234" "${post_a}" "root UUID is passed to the target"
 assert_contains "DRIVER=mesa" "${post_a}" "Mesa is selected on a Mesa install"
+assert_contains "LOCALE=de_DE.UTF-8" "${post_a}" "the language is suggested from the timezone"
+assert_contains "KEYMAP=de-latin1-nodeadkeys" "${post_a}" "the keyboard is suggested from the timezone"
+assert_contains "de-latin1-nodeadkeys" "$(cat "${flow_a}/dialog.log")" \
+    "the summary shows the keyboard layout"
+assert_contains "kbd" "${pacstrap_log}" "kbd is installed for the console keymap"
+assert_no_file "${flow_a}/mnt/root/.jupiter-post.sh" \
+    "the generated script does not keep the passwords in the target"
 assert_contains "mesa" "${pacstrap_log}" "Mesa is installed on a Mesa install"
 assert_contains "vulkan-radeon" "${pacstrap_log}" "AMD Vulkan driver satisfies Steam on a Mesa install"
 assert_contains "lib32-vulkan-radeon" "${pacstrap_log}" "32-bit Vulkan driver satisfies Steam"
 assert_contains "systemctl enable plasmalogin.service" "${post_a}" "Plasma Login Manager is enabled"
 assert_contains "passwd -l root" "${post_a}" "root is locked when no password is set"
+assert_contains "hwclock --systohc 2>/dev/null ||" "${post_a}" \
+    "a missing RTC does not abort the installation"
+assert_contains "systemd-boot was not written" "${post_a}" \
+    "the boot loader is verified instead of assumed"
 assert_contains 'options root=UUID=%s rw quiet loglevel=3' "${post_a}" \
     "boot entry template references the root UUID"
 
@@ -371,9 +463,13 @@ section "installer flow: wifi, NVIDIA, root password, back navigation"
 
 flow_b="${TMP_ROOT}/flow-b"
 make_sandbox "${flow_b}"
+mkdir -p "${flow_b}/nm"
+printf '[connection]\nid=home\npsk=hunter2\n' >"${flow_b}/nm/home.nmconnection"
 cat >"${flow_b}/responses.json" <<'JSON'
 ["", "wifi", "Cafe:WiFi", "secret", "",
  "/dev/vda", "ERASE", "America", "America/New_York",
+ "no", "keymap", "de-latin1-nodeadkeys", "yes",
+ {"cancel": true}, "yes",
  "Bad Name", "", "jane", "", "s3cret", "s3cret",
  "password", "rootpass", "rootpass", "jupiter-box",
  "nvidia-open", "no", "nvidia-open", "yes", "shell"]
@@ -392,6 +488,19 @@ assert_contains "options nvidia_drm modeset=1 fbdev=1" "${post_b}" "NVIDIA modes
 assert_contains "MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)" "${post_b}" \
     "NVIDIA modules are added to the initramfs"
 assert_contains "ROOT_PASSWORD=rootpass" "${post_b}" "root password is passed to the target"
+assert_contains "KEYMAP=de-latin1-nodeadkeys" "${post_b}" \
+    "an explicitly chosen keyboard survives going back and forth"
+assert_contains "LOCALE=en_US.UTF-8" "${post_b}" "changing the keyboard leaves the language alone"
+language_prompts=$(grep 'Use these settings' "${flow_b}/dialog.log")
+assert_eq "3" "$(printf '%s\n' "${language_prompts}" | wc -l)" \
+    "cancelling the account step returns to the language step"
+assert_contains "de-latin1-nodeadkeys" "$(printf '%s\n' "${language_prompts}" | tail -n1)" \
+    "re-entering the language step does not reset the layout"
+assert_file "${flow_b}/mnt/etc/NetworkManager/system-connections/home.nmconnection" \
+    "the Wi-Fi profile is carried into the new system"
+assert_eq "600" \
+    "$(stat -c '%a' "${flow_b}/mnt/etc/NetworkManager/system-connections/home.nmconnection" 2>/dev/null)" \
+    "the Wi-Fi profile keeps NetworkManager's permissions"
 
 assert_contains "wifi connect Cafe:WiFi password secret" "$(cat "${flow_b}/stub.log")" \
     "wifi credentials are handed to NetworkManager"
@@ -422,8 +531,9 @@ flow_d="${TMP_ROOT}/flow-d"
 make_sandbox "${flow_d}"
 : >"${flow_d}/online"
 cat >"${flow_d}/responses.json" <<'JSON'
-["", "", "/dev/vda", "ERASE", "Europe", "Europe/Berlin", "jane", "Jane Doe",
- "hunter2!", "hunter2!", "locked", "jupiter-box", "mesa", "yes", ""]
+["", "", "/dev/vda", "ERASE", "Europe", "Europe/Berlin", "yes",
+ "jane", "Jane Doe", "hunter2!", "hunter2!", "locked",
+ "jupiter-box", "mesa", "yes"]
 JSON
 
 if env -i \
@@ -434,6 +544,9 @@ if env -i \
     POST_SCRIPT_COPY="${flow_d}/post.sh" TEST_ROOT_UUID="TEST-UUID-1234" \
     LSPCI_FIXTURE="${AMD_LSPCI}" LSBLK_DISKS=$'/dev/vda 64G disk' LSBLK_BYTES=68719476736 \
     JUPITER_TEST_NONROOT=1 JUPITER_TEST_UEFI=1 JUPITER_TEST_LIVE_DISK=/dev/sdb \
+    JUPITER_TEST_SKIP_DEVICES=1 \
+    JUPITER_LOCALE_GEN="${TMP_ROOT}/locale.gen" JUPITER_KEYMAP_ROOT="${TMP_ROOT}/keymaps" \
+    JUPITER_NM_PROFILES="${flow_d}/nm" \
     JUPITER_MNT="${flow_d}/mnt" JUPITER_LOG="${flow_d}/install.log" \
     JUPITER_REPO_SOURCE="${flow_d}/repo" JUPITER_RUN_DIR="${flow_d}/run/jupiter" \
     STUB_FAIL=pacstrap \
@@ -443,6 +556,14 @@ else
     ok "a failed pacstrap fails the installer"
 fi
 assert_contains "Installation failed" "$(cat "${flow_d}/dialog.log")" "failure is reported to the user"
+assert_contains "--textbox" "$(cat "${flow_d}/dialog.log")" \
+    "the failure screen is scrollable instead of truncating the log"
+assert_contains "stopped while installing packages" \
+    "$(cat "${flow_d}/install.failure.txt" 2>/dev/null)" \
+    "the failure report names the stage that failed"
+assert_file "${flow_d}/install.failure.txt" "the failure report outlives the installer"
+assert_no_file "${flow_d}/mnt/root/.jupiter-post.sh" \
+    "a failed install leaves no password file behind"
 
 # --- summary ---------------------------------------------------------------
 

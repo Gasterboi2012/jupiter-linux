@@ -2,16 +2,19 @@
 # Jupiter post-install configuration.
 #
 # This file is appended to a generated script that defines these variables:
-#   TIMEZONE LOCALE HOSTNAME USERNAME USER_FULLNAME USER_PASSWORD
+#   TIMEZONE LOCALE KEYMAP HOSTNAME USERNAME USER_FULLNAME USER_PASSWORD
 #   ROOT_PASSWORD DRIVER UCODE DISK ROOT_UUID
 # It runs inside the newly installed system via arch-chroot.
 
 # --- clock, locale, console ------------------------------------------------
 ln -sf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime
-hwclock --systohc
+# Some virtual machines and boards have no usable RTC. That is not a reason
+# to fail an installation; systemd-timesyncd is enabled below either way.
+hwclock --systohc 2>/dev/null ||
+    printf 'warning: could not write the time to the hardware clock\n' >&2
 
 printf 'LANG=%s\n' "${LOCALE}" >/etc/locale.conf
-printf 'KEYMAP=us\n' >/etc/vconsole.conf
+printf 'KEYMAP=%s\n' "${KEYMAP}" >/etc/vconsole.conf
 
 locale_pattern=${LOCALE//./\\.}
 if ! grep -qxF "${LOCALE} UTF-8" /etc/locale.gen; then
@@ -78,9 +81,21 @@ mkinitcpio -P
 # --no-variables keeps bootctl from writing NVRAM from inside the chroot;
 # efibootmgr adds the entry instead.
 bootctl --esp-path=/boot --no-variables install >/dev/null
+
+# Verify the loader really landed on the ESP. Reporting success without a
+# boot loader would hand the user a machine that only boots from the medium.
+if [[ ! -f /boot/EFI/systemd/systemd-bootx64.efi ]]; then
+    printf 'systemd-boot was not written to /boot\n' >&2
+    exit 1
+fi
+
 if command -v efibootmgr >/dev/null 2>&1; then
-    efibootmgr --create --disk "${DISK}" --part 1 --label "Jupiter" \
-        --loader '\EFI\systemd\systemd-bootx64.efi' >/dev/null 2>&1 || true
+    if ! efibootmgr --create --disk "${DISK}" --part 1 --label "Jupiter" \
+        --loader '\EFI\systemd\systemd-bootx64.efi' >/dev/null; then
+        # Not fatal: bootctl installed the removable-media path as well, so
+        # the firmware can still find Jupiter on this disk.
+        printf 'warning: could not add a UEFI boot entry; using \\EFI\\BOOT\\BOOTX64.EFI\n' >&2
+    fi
 fi
 
 cat >/boot/loader/loader.conf <<'LOADER'

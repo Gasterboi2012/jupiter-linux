@@ -27,7 +27,7 @@ Build host requirements:
 
 ```sh
 sudo pacman -S --needed archiso dosfstools mtools squashfs-tools libisoburn \
-    base-devel git sudo
+    pacman-contrib base-devel git sudo
 ```
 
 Then, as a normal user (makepkg refuses to run as root):
@@ -38,7 +38,9 @@ Then, as a normal user (makepkg refuses to run as root):
 
 The script:
 
-1. builds `packages/jupiter-branding` (the only local package),
+1. builds `packages/jupiter-branding` (the only local package) from a copy
+   under `build/sources`, so `updpkgsums` refreshes the checksums without
+   leaving the git checkout dirty,
 2. clones and builds the AUR packages Jupiter ships (`paru-bin`,
    `zen-browser-bin`, `vesktop-bin`) — this needs network access,
 3. collects everything into a local `[jupiter]` repository,
@@ -58,24 +60,37 @@ where `jupiter-install` starts it again.
 
 ## The installer
 
-Seven linear steps, with `Esc`/`Cancel` to go back one step:
+Eight linear steps, with `Esc`/`Cancel` to go back one step:
 
 1. **Network** — skipped automatically when ethernet is already connected and
-   online; otherwise connect to Wi-Fi or retry ethernet.
-2. **Disk** — pick the disk to erase (whole disk, confirmation required).
+   online; otherwise connect to Wi-Fi or retry ethernet. Saved Wi-Fi profiles
+   are carried into the installed system, so it comes up online.
+2. **Disk** — pick the disk to erase. Each disk shows its size, model and the
+   partitions it already holds; only unmounted whole disks are offered, and
+   `ERASE` has to be typed to confirm.
 3. **Timezone** — region, then city.
-4. **Account** — username, optional full name, password, and root handling
+4. **Language** — locale and keyboard layout, suggested from the timezone's
+   country and confirmed in one keystroke. The layout is loaded into the live
+   console, so the password typed next matches your keyboard.
+5. **Account** — username, optional full name, password, and root handling
    (locked with `sudo`, or a separate root password).
-5. **Hostname**.
-6. **Graphics** — `mesa` (Intel, AMD, software) or `nvidia-open`.
-7. **Summary** — shows every choice before anything is written, then installs.
+6. **Hostname**.
+7. **Graphics** — `mesa` (Intel, AMD, software) or `nvidia-open`.
+8. **Summary** — shows every choice before anything is written, then installs.
 
 The disk is repartitioned as GPT with a 1 GiB EFI system partition (FAT32) and
 an ext4 root. There is no swap and no encryption. Everything on the chosen
 disk is destroyed.
 
+When something fails, the installer stops before unmounting and shows the end
+of the log in a scrollable window; the same report is left behind as
+`/tmp/jupiter-install.failure.txt`.
+
 Logs: `/tmp/jupiter-install.log` on the live medium, copied to
 `/var/log/jupiter-install.log` on the installed system.
+
+`jupiter-install --help` and `--version` exist for scripts; the installer
+refuses to run outside the live medium's UEFI session.
 
 ## Placeholder artwork
 
@@ -95,15 +110,17 @@ sources in the package directory):
 python3 packages/jupiter-branding/generate-assets.py
 ```
 
-Then update the checksums, either automatically (`pacman-contrib` provides
-`updpkgsums`, which `build.sh` uses when present) or by hand:
+Then update the checksums, which are checked in together with the artwork:
 
 ```sh
 cd packages/jupiter-branding && updpkgsums
 ```
 
-`build.sh` runs `updpkgsums` for you when it is installed, so a plain
-`./build.sh` after swapping artwork is usually enough.
+`build.sh` refreshes the checksums in its own build copy
+(`build/sources/jupiter-branding`), so building an ISO never fails on artwork
+you have already replaced. Committing the updated `PKGBUILD` keeps the
+repository in step with `./tests/run-tests.sh`, which verifies every
+checksum.
 
 `os-release` and `/etc/issue` belong to the Arch `filesystem` package, so
 `jupiter-branding` stages them in `/usr/lib/jupiter/` and applies them from its
@@ -115,9 +132,10 @@ package scriptlet and a pacman hook when `filesystem` changes.
 ./tests/run-tests.sh
 ```
 
-This checks shell syntax, input validation, timezone parsing, Wi-Fi output
-parsing, branding consistency, and runs the installer end to end against
-stubbed system commands and a scripted `dialog`, including the failure path.
+This checks shell syntax, input validation, timezone and locale parsing,
+keymap discovery, Wi-Fi output parsing, branding consistency, and runs the
+installer end to end against stubbed system commands and a scripted `dialog`,
+including the failure path.
 Useful knobs:
 
 - `SHELLCHECK=/path/to/shellcheck` — lint with a specific binary
@@ -128,6 +146,8 @@ Useful knobs:
 
 - UEFI only; legacy BIOS boot is refused.
 - One disk, whole-disk erase; no encryption, LVM, swap or dual-boot setup.
+- The language list is the locale set glibc ships; only UTF-8 locales with a
+  territory are offered, and the console font stays the default.
 - AUR packages are built from the AUR when the ISO is built, so the ISO
   reflects the AUR state at build time.
 - No Secure Boot signing.

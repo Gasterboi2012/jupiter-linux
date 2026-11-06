@@ -19,6 +19,9 @@ PACKAGES_BASE=(
     sudo
     networkmanager
     wpa_supplicant
+    # Keymap files for systemd-vconsole-setup: without kbd the KEYMAP the
+    # installer writes to /etc/vconsole.conf cannot be loaded at boot.
+    kbd
 )
 
 PACKAGES_DESKTOP=(
@@ -149,7 +152,12 @@ write_fstab() {
 # Write the configuration script that runs inside the new system. Values
 # are quoted with %q so nothing in a username or password is re-evaluated.
 write_post_script() {
-    local post="${MNT}/root/.jupiter-post.sh"
+    local post="${MNT}/root/.jupiter-post.sh" staging
+
+    # mktemp creates the file 0600, so the passwords it carries are never
+    # briefly world-readable while the script is being written.
+    install -d -m 700 "${MNT}/root"
+    staging=$(mktemp "${MNT}/root/.jupiter-post.XXXXXX")
 
     {
         printf '#!/usr/bin/env bash\n'
@@ -158,6 +166,7 @@ write_post_script() {
         printf "trap 'rm -f /root/.jupiter-post.sh' EXIT\n"
         printf 'TIMEZONE=%q\n' "${TIMEZONE}"
         printf 'LOCALE=%q\n' "${LOCALE}"
+        printf 'KEYMAP=%q\n' "${KEYMAP}"
         printf 'HOSTNAME=%q\n' "${HOSTNAME}"
         printf 'USERNAME=%q\n' "${USERNAME}"
         printf 'USER_FULLNAME=%q\n' "${USER_FULLNAME}"
@@ -168,18 +177,31 @@ write_post_script() {
         printf 'DISK=%q\n' "${TARGET_DISK}"
         printf 'ROOT_UUID=%q\n' "${ROOT_UUID}"
         cat "${INSTALLER_ASSETS}/post-install.sh"
-    } >"${post}"
+    } >"${staging}" || {
+        rm -f -- "${staging}"
+        return 1
+    }
 
-    chmod 700 "${post}"
+    chmod 700 "${staging}"
+    mv -f -- "${staging}" "${post}"
 }
 
 run_post_script() {
     progress 68 "Configuring the installed system"
-    arch-chroot "${MNT}" /root/.jupiter-post.sh
+    local status=0
+
+    arch-chroot "${MNT}" /root/.jupiter-post.sh || status=$?
+
+    # Never leave a script holding the accounts' passwords behind, even when
+    # the configuration failed halfway through.
     rm -f "${MNT}/root/.jupiter-post.sh"
+    return "${status}"
 }
 
 finish_install() {
+    progress 88 "Saving the network configuration"
+    net_copy_profiles "${MNT}" >>"${LOG}" 2>&1 || true
+
     progress 95 "Saving the installer log"
     install -d -m 755 "${MNT}/var/log"
     install -m 644 "${LOG}" "${MNT}/var/log/jupiter-install.log"
@@ -190,23 +212,35 @@ finish_install() {
     progress 100 "Installation complete"
 }
 
+# stage NAME COMMAND [ARGS...] - run one installation stage and, when it
+# fails, say so in the log. The failure dialog shows the end of the log, so
+# this is what tells the user where the installation stopped.
+stage() {
+    local name=$1
+    shift
+    if ! "$@"; then
+        printf '\nThe installation stopped while %s.\n' "${name}" >&2
+        return 1
+    fi
+}
+
 install_system() {
     progress 2 "Preparing ${TARGET_DISK}"
 
     # Fail before touching the disk if the package repository is missing.
-    prepare_local_repo || return $?
+    stage "preparing the package repository" prepare_local_repo || return 1
 
-    disk_partition "${TARGET_DISK}" || return $?
+    stage "partitioning ${TARGET_DISK}" disk_partition "${TARGET_DISK}" || return 1
 
-    ROOT_UUID=$(blkid -s UUID -o value "${DISK_ROOT}") || return $?
+    ROOT_UUID=$(blkid -s UUID -o value "${DISK_ROOT}") || true
     if [[ -z ${ROOT_UUID} ]]; then
         printf 'Could not read the root filesystem UUID from %s\n' "${DISK_ROOT}" >&2
         return 1
     fi
 
-    install_packages || return $?
-    write_fstab || return $?
-    write_post_script || return $?
-    run_post_script || return $?
-    finish_install || return $?
+    stage "installing packages" install_packages || return 1
+    stage "writing /etc/fstab" write_fstab || return 1
+    stage "writing the configuration script" write_post_script || return 1
+    stage "configuring the installed system" run_post_script || return 1
+    stage "finishing the installation" finish_install || return 1
 }

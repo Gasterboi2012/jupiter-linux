@@ -9,9 +9,14 @@ net_ethernet_device() {
         awk -F: '$2 == "ethernet" && $3 == "connected" { print $1; exit }'
 }
 
+# Online means "the package mirrors are reachable", not "ICMP works":
+# public networks routinely drop ping while HTTP is fine, and refusing to
+# install because of that would be wrong. ICMP is the fast path; DNS plus a
+# TCP handshake on 443 is the reliable one.
 net_online() {
-    ping -c1 -W2 -q 1.1.1.1 >/dev/null 2>&1 || return 1
-    getent ahostsv4 archlinux.org >/dev/null 2>&1
+    ping -c1 -W2 -q 1.1.1.1 >/dev/null 2>&1 && return 0
+    getent ahostsv4 archlinux.org >/dev/null 2>&1 || return 1
+    timeout 4 bash -c 'exec 3<>/dev/tcp/archlinux.org/443' 2>/dev/null
 }
 
 # net_wait_online SECONDS
@@ -55,6 +60,25 @@ net_wifi_scan() {
 
     (( ${#rows[@]} == 0 )) && return 0
     printf '%s\n' "${rows[@]}" | sort -t'|' -k2,2nr
+}
+
+# net_copy_profiles TARGET - carry the live session's saved connections
+# into the installed system. Without this, the Wi-Fi network configured
+# during installation is forgotten and the new system boots offline.
+net_copy_profiles() {
+    local target=$1
+    local source="${JUPITER_NM_PROFILES:-/etc/NetworkManager/system-connections}"
+    local -a profiles=()
+
+    [[ -d ${source} ]] || return 0
+    mapfile -t profiles < <(find "${source}" -maxdepth 1 -type f -name '*.nmconnection' 2>/dev/null)
+    (( ${#profiles[@]} > 0 )) || return 0
+
+    install -d -m 700 "${target}/etc/NetworkManager/system-connections"
+    # Profiles hold the PSK in clear text; NetworkManager refuses them unless
+    # they are root-owned and not readable by anyone else.
+    install -m 600 "${profiles[@]}" "${target}/etc/NetworkManager/system-connections/"
+    printf 'Copied %s NetworkManager profile(s)\n' "${#profiles[@]}"
 }
 
 # net_connect_wifi SSID [PASSWORD] [HIDDEN]

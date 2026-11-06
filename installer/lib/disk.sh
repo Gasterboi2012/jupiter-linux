@@ -19,17 +19,41 @@ _live_disk() {
     source=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)
     [[ -n ${source} ]] || return 0
 
-    parent=$(lsblk -no PKNAME -- "${source}" 2>/dev/null | head -n1)
+    parent=$(lsblk -no PKNAME -- "${source}" 2>/dev/null | head -n1) || true
     [[ -n ${parent} ]] && printf '/dev/%s\n' "${parent}"
+    return 0
 }
 
-# A disk with mounted partitions is in use; never offer it.
+# A disk with mounted partitions is in use; never offer it, and never
+# repartition it even if it was picked before something mounted it.
 _disk_in_use() {
-    local disk=$1
-    [[ -n $(lsblk -nlo MOUNTPOINT -- "${disk}" 2>/dev/null | tr -d '[:space:]') ]]
+    local disk=$1 mounts
+    mounts=$(lsblk -nlo MOUNTPOINT -- "${disk}" 2>/dev/null | tr -d '[:space:]') || true
+    [[ -n ${mounts} ]]
 }
 
-# disks_list - print "device|size|model" for every candidate disk.
+# _disk_contents DISK - short description of what erasing the disk destroys.
+_disk_contents() {
+    local disk=$1 parts filesystems
+
+    parts=$(lsblk -nlo TYPE -- "${disk}" 2>/dev/null | grep -c '^part$') || true
+    parts=${parts:-0}
+
+    if (( parts == 0 )); then
+        printf 'no partitions'
+        return 0
+    fi
+
+    filesystems=$(lsblk -nlo FSTYPE -- "${disk}" 2>/dev/null |
+        sed '/^$/d' | sort -u | paste -sd ',' -) || true
+    if [[ -n ${filesystems} ]]; then
+        printf '%s partition(s): %s' "${parts}" "${filesystems}"
+    else
+        printf '%s partition(s)' "${parts}"
+    fi
+}
+
+# disks_list - print "device|size|model|contents" for every candidate disk.
 disks_list() {
     local live name size type model
     live=$(_live_disk)
@@ -40,8 +64,9 @@ disks_list() {
         _disk_in_use "${name}" && continue
 
         model=$(lsblk -dno MODEL -- "${name}" 2>/dev/null |
-            tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
-        printf '%s|%s|%s\n' "${name}" "${size}" "${model:-Unknown model}"
+            tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//') || true
+        printf '%s|%s|%s|%s\n' \
+            "${name}" "${size}" "${model:-Unknown model}" "$(_disk_contents "${name}")"
     done < <(lsblk -dpno NAME,SIZE,TYPE 2>/dev/null)
 }
 
@@ -54,18 +79,60 @@ _set_partition_names() {
     DISK_ROOT="${disk}${suffix}2"
 }
 
+# Device nodes only exist on a real installation; the tests exercise the
+# partitioning path with stubbed commands instead.
+_is_block_device() {
+    if [[ ${JUPITER_TEST_SKIP_DEVICES:-0} == 1 ]]; then
+        return 0
+    fi
+    [[ -b ${1} ]]
+}
+
+# Partition nodes are created asynchronously by udev. Formatting a node that
+# does not exist yet fails with a bare "No such file or directory".
+_wait_for_device() {
+    local device=$1 waited=0
+
+    while (( waited < 10 )); do
+        _is_block_device "${device}" && return 0
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    printf 'Device %s did not appear after partitioning\n' "${device}" >&2
+    return 1
+}
+
 # disk_partition DISK - GPT layout, format, mount at $MNT.
 disk_partition() {
     local disk=$1
+
     _set_partition_names "${disk}"
 
     progress 6 "Wiping ${disk}"
-    umount -R "${MNT}" 2>/dev/null || true
+    disk_unmount_target
+
+    if ! _is_block_device "${disk}"; then
+        printf '%s is not a block device\n' "${disk}" >&2
+        return 1
+    fi
+
+    # The disk list skips mounted disks, but the check is repeated here: a
+    # desktop environment or udev rule may have mounted something in between,
+    # and repartitioning a mounted disk corrupts it.
+    if _disk_in_use "${disk}"; then
+        printf '%s has mounted filesystems; refusing to erase it\n' "${disk}" >&2
+        return 1
+    fi
+
     sgdisk --zap-all "${disk}"
     sgdisk --new=1:0:+1024M --typecode=1:ef00 --change-name=1:JUPITER_ESP "${disk}"
     sgdisk --new=2:0:0 --typecode=2:8300 --change-name=2:JUPITER_ROOT "${disk}"
     partprobe "${disk}" 2>/dev/null || true
     udevadm settle --timeout=15 2>/dev/null || sleep 2
+
+    _wait_for_device "${DISK_ESP}" || return 1
+    _wait_for_device "${DISK_ROOT}" || return 1
 
     progress 10 "Formatting ${DISK_ESP} (EFI system partition)"
     wipefs -a "${DISK_ESP}" >/dev/null 2>&1 || true

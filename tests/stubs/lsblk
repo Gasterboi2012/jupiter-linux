@@ -17,6 +17,11 @@ elif "-dno" in joined and "MODEL" in joined:
     print(os.environ.get("LSBLK_MODEL", "QEMU HARDDISK"))
 elif "-bno" in joined and "SIZE" in joined:
     print(os.environ.get("LSBLK_BYTES", "68719476736"))
+# FSTYPE contains TYPE, so it has to be matched first.
+elif "-nlo" in joined and "FSTYPE" in joined:
+    print(os.environ.get("LSBLK_FSTYPES", ""), end="")
+elif "-nlo" in joined and "TYPE" in joined:
+    print(os.environ.get("LSBLK_TYPES", ""), end="")
 elif "-nlo" in joined and "MOUNTPOINT" in joined:
     pass
 elif "-no" in joined and "PKNAME" in joined:

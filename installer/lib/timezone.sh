@@ -21,3 +21,10 @@ tz_cities() {
             }
         }' "${ZONE_TAB}" | sort -t'|' -k1,1 -u
 }
+
+# tz_country ZONE - the ISO 3166 country code zone.tab records for a zone.
+# Used to suggest a language and keyboard layout; empty for zones that have
+# no country (UTC).
+tz_country() {
+    awk -F'\t' -v zone="$1" '!/^#/ && NF >= 3 && $3 == zone { print $1; exit }' "${ZONE_TAB}"
+}

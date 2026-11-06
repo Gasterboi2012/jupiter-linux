@@ -10,6 +10,9 @@ export DIALOGRC
 
 UI_BACKTITLE=" Jupiter"
 UI_WIDTH="${UI_WIDTH:-76}"
+# Set to 1 before a prompt whose safe answer is "no" (anything destructive);
+# the cancel button then has focus, so a stray Enter cannot wipe a disk.
+UI_DEFAULT_NO=""
 
 # ui_backtitle STEP TOTAL TITLE
 ui_backtitle() {
@@ -29,10 +32,16 @@ ui_msgbox() {
 }
 
 # ui_yesno TITLE TEXT [OK_LABEL] [CANCEL_LABEL]
+# UI_DEFAULT_NO=1 makes the cancel button the default.
 ui_yesno() {
     local title=${1} text=${2} ok=${3:-Yes} cancel=${4:-No}
+    local -a extra=()
+    if [[ ${UI_DEFAULT_NO} == "1" ]]; then
+        extra=(--defaultno)
+    fi
+    UI_DEFAULT_NO=""
     _ui --title " ${title} " --ok-label "${ok}" --cancel-label "${cancel}" \
-        --yesno "${text}" 0 "${UI_WIDTH}"
+        "${extra[@]}" --yesno "${text}" 0 "${UI_WIDTH}"
 }
 
 # ui_menu TITLE TEXT TAG DESCRIPTION [TAG DESCRIPTION ...]
@@ -61,10 +70,11 @@ ui_password() {
     _ui --title " ${title} " --insecure --passwordbox "${text}" 0 "${UI_WIDTH}"
 }
 
-# ui_textbox TITLE FILE
+# ui_textbox TITLE FILE - scrollable report, used for failures.
 ui_textbox() {
     local title=${1} file=${2}
-    _ui --title " ${title} " --scrollbar --textbox "${file}" 0 "${UI_WIDTH}"
+    _ui --title " ${title} " --scrollbar --ok-label "Close" \
+        --textbox "${file}" 0 "${UI_WIDTH}"
 }
 
 # ui_infobox TITLE TEXT - fire and forget, used before a slow action.
@@ -75,8 +85,10 @@ ui_infobox() {
 }
 
 # ui_gauge TITLE TEXT - reads percentages from stdin.
+# Esc is disabled as well as the cancel button: dismissing the gauge would
+# leave the installation running with no UI and no way back to it.
 ui_gauge() {
     local title=${1} text=${2}
     dialog --colors --no-collapse --backtitle "${UI_BACKTITLE}" \
-        --title " ${title} " --nocancel --gauge "${text}" 12 "${UI_WIDTH}" 0
+        --title " ${title} " --nocancel --noesc --gauge "${text}" 12 "${UI_WIDTH}" 0
 }

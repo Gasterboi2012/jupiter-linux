@@ -2,8 +2,8 @@
 # Jupiter Linux installer.
 #
 # A deliberately small, linear TUI installer: network, disk, timezone,
-# account, hostname, graphics, summary. Everything else is decided for the
-# user so an install is a handful of keystrokes.
+# language, account, hostname, graphics, summary. Everything else is decided
+# for the user so an install is a handful of keystrokes.
 
 set -Eeuo pipefail
 
@@ -23,6 +23,8 @@ source "${SCRIPT_DIR}/lib/detect.sh"
 source "${SCRIPT_DIR}/lib/validate.sh"
 # shellcheck source=lib/timezone.sh
 source "${SCRIPT_DIR}/lib/timezone.sh"
+# shellcheck source=lib/locale.sh
+source "${SCRIPT_DIR}/lib/locale.sh"
 # shellcheck source=lib/disk.sh
 source "${SCRIPT_DIR}/lib/disk.sh"
 # shellcheck source=lib/network.sh
@@ -32,6 +34,10 @@ source "${SCRIPT_DIR}/lib/system.sh"
 
 TIMEZONE="UTC"
 LOCALE="en_US.UTF-8"
+KEYMAP="us"
+# Set once the language step has been confirmed, so going back to it from a
+# later step keeps an explicitly chosen locale and layout.
+LANGUAGE_CONFIRMED=""
 HOSTNAME="jupiter"
 USERNAME=""
 USER_FULLNAME=""
@@ -43,7 +49,26 @@ UCODE=""
 # shellcheck disable=SC2034
 ROOT_UUID=""
 
+# Scratch state, both cleaned up by cleanup().
+JUPITER_TMPDIR=""
+INSTALL_PID=""
+
 # --- preflight -------------------------------------------------------------
+
+usage() {
+    cat <<'USAGE'
+Jupiter Linux installer.
+
+Usage: jupiter-install [options]
+
+Options:
+  -h, --help      Show this help and exit.
+  -V, --version   Show the installer version and exit.
+
+The installer runs as root from the live medium and writes nothing until the
+summary is confirmed.
+USAGE
+}
 
 require_root() {
     if [[ ${EUID} -eq 0 || ${JUPITER_TEST_NONROOT:-0} == 1 ]]; then
@@ -163,6 +188,8 @@ wifi_flow() {
             return 1
         fi
     else
+        # Read the security back from the row that was actually selected
+        # instead of trusting the last iteration of the loop above.
         security=""
         for row in "${networks[@]}"; do
             IFS='|' read -r ssid signal security <<<"${row}"
@@ -193,7 +220,7 @@ wifi_flow() {
 
 step_disk() {
     local -a menu=() disks=()
-    local row device size model choice confirmation bytes
+    local row device size model contents choice confirmation bytes
 
     mapfile -t disks < <(disks_list)
     if (( ${#disks[@]} == 0 )); then
@@ -202,22 +229,23 @@ step_disk() {
     fi
 
     for row in "${disks[@]}"; do
-        IFS='|' read -r device size model <<<"${row}"
-        menu+=("${device}" "${size}  ${model}")
+        IFS='|' read -r device size model contents <<<"${row}"
+        menu+=("${device}" "${size}  ${model}  -  ${contents}")
     done
 
     if ! choice=$(ui_menu "Disk" "\Z1Choose the disk Jupiter will be installed on.\nEvery partition and every file on it will be erased.\Z0\n\nLayout: 1 GiB EFI system partition + ext4 root." "${menu[@]}"); then
         return 1
     fi
 
-    bytes=$(lsblk -bno SIZE -- "${choice}" 2>/dev/null | head -n1)
+    bytes=$(lsblk -bno SIZE -- "${choice}" 2>/dev/null | head -n1) || true
     if [[ -n ${bytes} ]] && (( bytes < 20 * 1024 * 1024 * 1024 )); then
+        UI_DEFAULT_NO=1
         if ! ui_yesno "Small disk" "${choice} is smaller than 20 GiB.\n\nAfter the system, Steam and the bundled browsers\nthere will be very little room left.\n\nContinue anyway?" "Continue" "Back"; then
             return 1
         fi
     fi
 
-    if ! confirmation=$(ui_input "Erase ${choice}" "\Z1This cannot be undone.\Z0\n\nType \Z3ERASE\Z0 to confirm that ${choice} may be wiped:" ""); then
+    if ! confirmation=$(ui_input "Erase ${choice}" "\Z1This cannot be undone.\Z0\n\nType \Z3ERASE\Z0 to confirm that ${choice} may be wiped:\n$(_disk_contents "${choice}")" ""); then
         return 1
     fi
 
@@ -269,6 +297,101 @@ step_timezone() {
     TIMEZONE=${choice}
 }
 
+# pick_locale - menu over every UTF-8 locale the medium carries.
+pick_locale() {
+    local -a menu=() locales=()
+    local locale
+
+    mapfile -t locales < <(locale_list)
+    if (( ${#locales[@]} == 0 )); then
+        ui_msgbox "Language" "This medium carries no locale list.\n\n${LOCALE} is used."
+        return 1
+    fi
+
+    for locale in "${locales[@]}"; do
+        menu+=("${locale}" "UTF-8")
+    done
+
+    UI_DEFAULT_ITEM="${LOCALE}"
+    ui_menu "Language" "Choose the language and locale of the installed system." "${menu[@]}"
+}
+
+# pick_keymap - menu over the PC keymaps kbd ships.
+pick_keymap() {
+    local -a menu=() keymaps=()
+    local keymap
+
+    mapfile -t keymaps < <(keymap_list)
+    if (( ${#keymaps[@]} == 0 )); then
+        ui_msgbox "Keyboard" "This medium carries no keymap list.\n\n${KEYMAP} is used."
+        return 1
+    fi
+
+    for keymap in "${keymaps[@]}"; do
+        menu+=("${keymap}" "Keyboard layout")
+    done
+
+    UI_DEFAULT_ITEM="${KEYMAP}"
+    ui_menu "Keyboard" "Choose the keyboard layout of the installed system." "${menu[@]}"
+}
+
+step_language() {
+    local country suggestion suggested choice text
+
+    country=$(tz_country "${TIMEZONE}")
+    if [[ -z ${LANGUAGE_CONFIRMED} ]]; then
+        suggestion=$(suggestion_for_country "${country}")
+        LOCALE=${suggestion%%|*}
+        KEYMAP=${suggestion#*|}
+    fi
+
+    while :; do
+        text="\Z3Language\Z0      ${LOCALE}\n\Z3Keyboard\Z0      ${KEYMAP}\n\n"
+        if [[ -n ${country} ]]; then
+            text+="These are the usual defaults for ${country}.\n\n"
+        fi
+        text+="The layout is applied to this installer too, so the\npassword you type next matches your keyboard.\n\nUse these settings?"
+
+        if ui_yesno "Language & keyboard" "${text}" "Use these" "Change"; then
+            LANGUAGE_CONFIRMED=1
+            apply_keymap
+            return 0
+        fi
+
+        if ! choice=$(ui_menu "Language & keyboard" "Which setting do you want to change?" \
+            "locale" "Language and locale (${LOCALE})" \
+            "keymap" "Keyboard layout (${KEYMAP})" \
+            "both" "Change both"); then
+            return 1
+        fi
+
+        case ${choice} in
+            locale)
+                if ! suggested=$(pick_locale); then
+                    return 1
+                fi
+                LOCALE=${suggested}
+                ;;
+            keymap)
+                if ! suggested=$(pick_keymap); then
+                    return 1
+                fi
+                KEYMAP=${suggested}
+                ;;
+            both)
+                if ! suggested=$(pick_locale); then
+                    return 1
+                fi
+                LOCALE=${suggested}
+                if ! suggested=$(pick_keymap); then
+                    return 1
+                fi
+                KEYMAP=${suggested}
+                ;;
+        esac
+    done
+}
+
 step_account() {
     local username full_name password confirm root_choice root_pw root_confirm
 
@@ -282,20 +405,22 @@ step_account() {
         ui_msgbox "Invalid username" "\"${username}\" cannot be used.\n\nUse lowercase letters, digits, '-' or '_',\nstart with a letter, and pick a name that is\nnot a system account."
     done
 
-    if ! full_name=$(ui_input "Account" "Full name for ${username} (optional).\nIt is shown on the login screen." ""); then
-        return 1
-    fi
+    while :; do
+        if ! full_name=$(ui_input "Account" "Full name for ${username} (optional).\nIt is shown on the login screen." ""); then
+            return 1
+        fi
+        if valid_fullname "${full_name}"; then
+            break
+        fi
+        ui_msgbox "Invalid name" "That name cannot be used.\n\nKeep it under 64 characters and leave out\ncontrol characters."
+    done
 
     while :; do
         if ! password=$(ui_password "Password" "Set a password for ${username}:"); then
             return 1
         fi
-        if [[ -z ${password} ]]; then
-            ui_msgbox "Password" "The password cannot be empty."
-            continue
-        fi
-        if [[ ${password} == *:* ]]; then
-            ui_msgbox "Password" "The password cannot contain ':'."
+        if ! valid_password "${password}"; then
+            ui_msgbox "Password" "The password cannot be empty, contain ':' or\ncontrol characters, or be longer than 128\ncharacters."
             continue
         fi
         if ! confirm=$(ui_password "Password" "Repeat the password:"); then
@@ -328,12 +453,8 @@ step_account() {
             if ! root_pw=$(ui_password "Root password" "Set the root password:"); then
                 return 1
             fi
-            if [[ -z ${root_pw} ]]; then
-                ui_msgbox "Root password" "The password cannot be empty."
-                continue
-            fi
-            if [[ ${root_pw} == *:* ]]; then
-                ui_msgbox "Root password" "The password cannot contain ':'."
+            if ! valid_password "${root_pw}"; then
+                ui_msgbox "Root password" "The password cannot be empty, contain ':' or\ncontrol characters, or be longer than 128\ncharacters."
                 continue
             fi
             if ! root_confirm=$(ui_password "Root password" "Repeat the root password:"); then
@@ -386,6 +507,7 @@ step_driver() {
     fi
 
     if [[ ${choice} == "nvidia-open" ]] && ! has_nvidia_gpu; then
+        UI_DEFAULT_NO=1
         if ! ui_yesno "NVIDIA drivers" "No NVIDIA GPU was detected on this machine.\n\nThe NVIDIA modules may not load on a different GPU.\n\nInstall them anyway?" "Install" "Back"; then
             return 1
         fi
@@ -411,7 +533,8 @@ step_summary() {
   \Z3Layout\Z0        1 GiB EFI system partition + ext4 root
   \Z3Hostname\Z0      ${HOSTNAME}
   \Z3Timezone\Z0      ${TIMEZONE}
-  \Z3Locale\Z0        ${LOCALE}
+  \Z3Language\Z0      ${LOCALE}
+  \Z3Keyboard\Z0      ${KEYMAP}
   \Z3User\Z0          ${USERNAME} (wheel, sudo)
   \Z3Root\Z0          ${root_account}
   \Z3Graphics\Z0      ${driver_label}
@@ -428,9 +551,12 @@ step_summary() {
 # --- install ---------------------------------------------------------------
 
 run_installation() {
-    local fifo pid rc=0 tail_output
+    local fifo rc=0 report
 
-    fifo=$(mktemp -u /tmp/jupiter-fifo.XXXXXX)
+    # A private directory, rather than a guessable name in /tmp: the FIFO is
+    # created inside it with mkfifo, which does not race like mktemp -u.
+    JUPITER_TMPDIR=$(mktemp -d /tmp/jupiter-install.XXXXXX)
+    fifo="${JUPITER_TMPDIR}/progress"
     mkfifo -m 600 "${fifo}"
     : >"${LOG}"
 
@@ -438,25 +564,41 @@ run_installation() {
         exec 3>"${fifo}"
         install_system
     ) >>"${LOG}" 2>&1 &
-    pid=$!
+    INSTALL_PID=$!
 
     # Read by ui_gauge in lib/ui.sh.
     # shellcheck disable=SC2034
     UI_BACKTITLE=" Jupiter  ·  Installing"
     ui_gauge "Installing Jupiter" "Installing Jupiter Linux.\n\nPartitioning, downloading packages and configuring\nthe system. This usually takes a few minutes." <"${fifo}"
 
-    wait "${pid}" || rc=$?
-    rm -f "${fifo}"
+    wait "${INSTALL_PID}" || rc=$?
+    INSTALL_PID=""
 
     if (( rc != 0 )); then
-        tail_output=$(tail -n 20 "${LOG}" 2>/dev/null || true)
-        ui_msgbox "Installation failed" "The installation stopped (exit code ${rc}).\n\n\Z1Last lines of ${LOG}:\Z0\n\n${tail_output}"
+        # Kept next to the log rather than in the scratch directory, so it is
+        # still there when the installer has exited.
+        report="${LOG%.log}.failure.txt"
+        {
+            printf 'Jupiter %s could not finish installing.\n\n' "${JUPITER_VERSION}"
+            printf 'Exit code: %s\n' "${rc}"
+            printf 'Disk:      %s\n' "${TARGET_DISK}"
+            printf 'Log:       %s\n\n' "${LOG}"
+            printf 'Report:    %s\n\n' "${report}"
+            printf 'Last 300 lines of the log:\n\n'
+            tail -n 300 "${LOG}" 2>/dev/null || true
+        } >"${report}"
+
+        ui_textbox "Installation failed" "${report}"
         return 1
     fi
 }
 
 screen_finish() {
     local choice
+
+    # Read by ui_menu in lib/ui.sh.
+    # shellcheck disable=SC2034
+    UI_DEFAULT_ITEM="reboot"
     if ! choice=$(ui_menu "Installation complete" "\Z3Jupiter is installed.\Z0\n\nRemove the installation medium, then reboot into\nyour new system.\n\nInstall log: /var/log/jupiter-install.log" \
         "reboot" "Reboot into Jupiter" \
         "poweroff" "Power off" \
@@ -485,8 +627,21 @@ cleanup() {
     local status=$?
     trap - EXIT
 
+    # An installation still running must be stopped before the target is
+    # unmounted, otherwise pacstrap keeps writing to a filesystem that is
+    # being torn down underneath it.
+    if [[ -n ${INSTALL_PID} ]] && kill -0 "${INSTALL_PID}" 2>/dev/null; then
+        kill -TERM "${INSTALL_PID}" 2>/dev/null || true
+        wait "${INSTALL_PID}" 2>/dev/null || true
+    fi
+
     release_local_repo
     disk_unmount_target
+
+    if [[ -n ${JUPITER_TMPDIR} ]]; then
+        rm -rf -- "${JUPITER_TMPDIR}"
+    fi
+
     dialog --clear >/dev/null 2>&1 || true
 
     if (( status != 0 )) && [[ ${JUPITER_TEST_NONROOT:-0} != 1 ]]; then
@@ -497,6 +652,24 @@ cleanup() {
 # --- main ------------------------------------------------------------------
 
 main() {
+    case ${1:-} in
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        -V | --version)
+            printf 'jupiter-install %s\n' "${JUPITER_VERSION}"
+            exit 0
+            ;;
+        "")
+            ;;
+        *)
+            printf 'Unknown option: %s\n\n' "${1}" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+
     require_root
     trap 'cleanup' EXIT
 
@@ -510,6 +683,7 @@ main() {
         step_network
         step_disk
         step_timezone
+        step_language
         step_account
         step_hostname
         step_driver
@@ -519,6 +693,7 @@ main() {
         [step_network]="Network"
         [step_disk]="Disk"
         [step_timezone]="Timezone"
+        [step_language]="Language"
         [step_account]="Account"
         [step_hostname]="Hostname"
         [step_driver]="Graphics"

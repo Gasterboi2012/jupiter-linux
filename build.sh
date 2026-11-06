@@ -14,6 +14,7 @@ PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 BUILD_DIR="${PROJECT_DIR}/build"
 REPO_DIR="${BUILD_DIR}/repo"
 AUR_DIR="${BUILD_DIR}/aur"
+SOURCE_DIR="${BUILD_DIR}/sources"
 PROFILE_DIR="${BUILD_DIR}/profile"
 WORK_DIR="${BUILD_DIR}/work"
 OUT_DIR="${PROJECT_DIR}/out"
@@ -21,8 +22,10 @@ OUT_DIR="${PROJECT_DIR}/out"
 LOCAL_PACKAGES=(jupiter-branding)
 AUR_PACKAGES=(paru-bin vesktop-bin zen-browser-bin)
 
-# Packages the build host has to provide for mkarchiso.
-BUILD_PACKAGES=(archiso dosfstools mtools squashfs-tools libisoburn)
+# Packages the build host has to provide for mkarchiso and for packaging.
+# pacman-contrib supplies updpkgsums, which keeps the local package
+# checksums in step with the artwork.
+BUILD_PACKAGES=(archiso dosfstools mtools squashfs-tools libisoburn pacman-contrib)
 
 log() {
     printf '\033[1;33m==>\033[0m %s\n' "$*"
@@ -38,6 +41,8 @@ check_environment() {
 
     command -v pacman >/dev/null 2>&1 || die "This is not an Arch system."
     command -v makepkg >/dev/null 2>&1 || die "makepkg is missing; install base-devel."
+    command -v repo-add >/dev/null 2>&1 || die "repo-add is missing; it ships with pacman."
+    command -v updpkgsums >/dev/null 2>&1 || die "updpkgsums is missing; install pacman-contrib."
     command -v git >/dev/null 2>&1 || die "git is missing."
     command -v sudo >/dev/null 2>&1 || die "sudo is missing."
 
@@ -53,25 +58,30 @@ check_environment() {
 
 prepare_directories() {
     install -d "${BUILD_DIR}" "${AUR_DIR}" "${OUT_DIR}"
-    rm -rf "${REPO_DIR}"
-    install -d "${REPO_DIR}"
+    rm -rf "${REPO_DIR}" "${SOURCE_DIR}"
+    install -d "${REPO_DIR}" "${SOURCE_DIR}"
 }
 
 build_local_packages() {
-    local package directory
+    local package directory staged
     for package in "${LOCAL_PACKAGES[@]}"; do
         directory="${PROJECT_DIR}/packages/${package}"
         [[ -f ${directory}/PKGBUILD ]] || die "No PKGBUILD in ${directory}"
 
-        # Keep checksums in step with the artwork, if pacman-contrib is
-        # available. Local packages are the only ones we can touch.
-        if command -v updpkgsums >/dev/null 2>&1; then
-            ( cd "${directory}" && updpkgsums >/dev/null )
-        fi
+        # Build from a copy under build/: updpkgsums rewrites the PKGBUILD,
+        # and a build must never leave the git checkout dirty or pick up a
+        # stale src/ tree from an earlier run.
+        staged="${SOURCE_DIR}/${package}"
+        cp -a "${directory}" "${staged}"
+        rm -rf "${staged}/src" "${staged}/pkg"
+        rm -f "${staged}"/*.pkg.tar.*
+
+        log "Updating checksums for ${package}"
+        ( cd "${staged}" && updpkgsums >/dev/null )
 
         log "Building ${package}"
-        ( cd "${directory}" && makepkg -sf --noconfirm )
-        cp "${directory}"/*.pkg.tar.zst "${REPO_DIR}/"
+        ( cd "${staged}" && makepkg -sCf --noconfirm )
+        cp "${staged}"/*.pkg.tar.zst "${REPO_DIR}/"
     done
 }
 
@@ -89,7 +99,7 @@ build_aur_packages() {
         fi
 
         log "Building ${package}"
-        ( cd "${directory}" && makepkg -sf --noconfirm )
+        ( cd "${directory}" && makepkg -sCf --noconfirm )
         cp "${directory}"/*.pkg.tar.zst "${REPO_DIR}/"
     done
 }

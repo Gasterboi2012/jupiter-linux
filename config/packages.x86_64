@@ -1,5 +1,6 @@
 # Packages in the live ISO. This list is intentionally short: everything
 # needed to boot, reach the network and install, and nothing else.
+amd-ucode
 arch-install-scripts
 archlinux-keyring
 base
@@ -8,6 +9,10 @@ dosfstools
 e2fsprogs
 efibootmgr
 gptfdisk
+intel-ucode
+# kbd provides loadkeys and the keymaps the installer lists, so the live
+# console can switch to the layout the user picks.
+kbd
 linux
 linux-firmware
 mkinitcpio-archiso
