@@ -1,0 +1,12 @@
+NAME="Jupiter"
+PRETTY_NAME="Jupiter Linux"
+ID=jupiter
+ID_LIKE=arch
+VERSION="0.1"
+VERSION_ID=0.1
+BUILD_ID=rolling
+ANSI_COLOR="38;2;232;163;61"
+HOME_URL="https://jupiter.example/"
+SUPPORT_URL="https://jupiter.example/support"
+BUG_REPORT_URL="https://jupiter.example/issues"
+LOGO=jupiter-logo

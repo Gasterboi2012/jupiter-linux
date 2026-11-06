@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Jupiter placeholder logo.
+
+  Replace this file (and logo-256.png / logo-512.png) with your own artwork.
+  Keep the file name "jupiter-logo" so os-release(5)'s LOGO= entry,
+  KInfoCenter and the Plasma About page keep resolving it.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f9e2bd"/>
+      <stop offset="0.45" stop-color="#e8a33d"/>
+      <stop offset="1" stop-color="#a8531b"/>
+    </linearGradient>
+    <clipPath id="planet">
+      <circle cx="128" cy="128" r="62"/>
+    </clipPath>
+  </defs>
+
+  <circle cx="128" cy="128" r="62" fill="url(#body)"/>
+  <g clip-path="url(#planet)" fill="#8c4413" opacity="0.35">
+    <rect x="50" y="98" width="160" height="9" rx="4.5"/>
+    <rect x="50" y="122" width="160" height="6" rx="3"/>
+    <rect x="50" y="146" width="160" height="12" rx="6"/>
+  </g>
+  <ellipse cx="128" cy="140" rx="106" ry="24" fill="none" stroke="#f9e2bd"
+           stroke-width="7" opacity="0.8" transform="rotate(-16 128 140)"/>
+</svg>

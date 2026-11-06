@@ -1,0 +1,89 @@
+# Maintainer: Jupiter Linux <maintainers@jupiter.example>
+#
+# Placeholder artwork sits next to this PKGBUILD (makepkg only finds local
+# sources in the package directory). Replace logo.svg, logo-256.png,
+# logo-512.png, logo.txt and wallpaper.png (see generate-assets.py), run
+# `updpkgsums`, then rebuild; nothing else needs to know the artwork changed.
+
+pkgname=jupiter-branding
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Jupiter Linux branding: os-release, logo, wallpaper and desktop defaults"
+arch=('any')
+url="https://jupiter.example/"
+license=('CC0-1.0')
+install=jupiter-branding.install
+source=(
+    'os-release'
+    'lsb-release'
+    'issue'
+    'logo.txt'
+    'logo.svg'
+    'logo-256.png'
+    'logo-512.png'
+    'fastfetch.jsonc'
+    'kcm-about-distrorc'
+    'kdeglobals'
+    'jupiter-branding-apply'
+    'jupiter-branding.hook'
+    'wallpaper.png'
+    'wallpaper-preview.png'
+    'wallpaper-metadata.json'
+)
+sha256sums=('0c52812fa1b9ab61f8f6a58d78d22d2e6e901e80a83c4edb9c2f0bdfb05e1694'
+            '25fdd93dbdb26769d3f477fd0179e27b5534d0662754a468255a9dc32d736ef1'
+            '8ea892775295d0bb5006a3c67e0ddfef9a82e538bccd7a4130839bcd150fda65'
+            'dd565f7b11cd4baf169528e224293b3f1fae84d9910e6896738d013a841c332f'
+            'fdd0077c217ebb42797ab0693894b458a559d2d2a68029c146fd6e960ed0a061'
+            '571eae4b268ed97c983d5072bc1d3db44b4dbc4690e05ef4bd0f58cbb75a1b77'
+            'accfa9bc140dd3c241e671188c6c530c3af896f4e2ec37e55deed4fb3251f787'
+            '5cb6f8ea0fcf2dce766917df68443f2d00e1d75e977aef5a634c2757de2db57d'
+            'a5560d9ea32ddca3d4a4b349e582990687e2a5c08d725b4cb7c059807ca2565d'
+            '9aae09013d983b38105afef24068dd2af31b4bfe28ae019990bfb0c14b1b75a1'
+            '9c8ea5ab6b6780ab5d7b4207a5ff9d557eaefc859f6de3d9f065d8da910acbe3'
+            '811a54e708cff8626d95864fdb5b77d23e434973e21cb4c923f54ba1583a7f6c'
+            '011258c5eba3dde0bb7a3426ffdfe43fd7713f8fc0511ad836a7f3fe56dba54a'
+            '439f79e5d8fbcd39c88b76d9e68257cdf3e0b875bfe0525ef873a95fbea4a6d7'
+            'f3cf02f3a5f8bb18269aacc008a266b6028538410ae3024af903d439cd4b9c40')
+
+package() {
+    # os-release and /etc/issue belong to the Arch "filesystem" package, so
+    # they are staged in /usr/lib/jupiter and applied by the scriptlet and by
+    # a pacman hook (see jupiter-branding-apply).
+    install -Dm644 "${srcdir}/os-release" "${pkgdir}/usr/lib/jupiter/os-release"
+    install -Dm644 "${srcdir}/issue" "${pkgdir}/usr/lib/jupiter/issue"
+    install -Dm644 "${srcdir}/lsb-release" "${pkgdir}/etc/lsb-release"
+    install -Dm755 "${srcdir}/jupiter-branding-apply" "${pkgdir}/usr/bin/jupiter-branding-apply"
+    install -Dm644 "${srcdir}/jupiter-branding.hook" \
+        "${pkgdir}/usr/share/libalpm/hooks/jupiter-branding.hook"
+
+    # Artwork. os-release sets LOGO=jupiter-logo, which resolves through the
+    # hicolor icon theme; KInfoCenter and the Plasma About page use it.
+    install -Dm644 "${srcdir}/logo.svg" \
+        "${pkgdir}/usr/share/icons/hicolor/scalable/apps/jupiter-logo.svg"
+    install -Dm644 "${srcdir}/logo.svg" "${pkgdir}/usr/share/pixmaps/jupiter-logo.svg"
+    install -Dm644 "${srcdir}/logo-256.png" \
+        "${pkgdir}/usr/share/icons/hicolor/256x256/apps/jupiter-logo.png"
+    install -Dm644 "${srcdir}/logo-512.png" \
+        "${pkgdir}/usr/share/icons/hicolor/512x512/apps/jupiter-logo.png"
+    install -Dm644 "${srcdir}/logo.txt" "${pkgdir}/usr/share/jupiter/branding/logo.txt"
+
+    # KInfoCenter "About this System" (also shown in System Settings):
+    # /etc/xdg/kcm-about-distrorc names the logo and the project website.
+    install -Dm644 "${srcdir}/logo.svg" "${pkgdir}/usr/share/about-distro/jupiter-logo.svg"
+    install -Dm644 "${srcdir}/kcm-about-distrorc" "${pkgdir}/etc/xdg/kcm-about-distrorc"
+
+    # System-wide fastfetch look, used until the user writes their own config.
+    install -Dm644 "${srcdir}/fastfetch.jsonc" "${pkgdir}/etc/fastfetch/config.jsonc"
+
+    # Desktop defaults. Anything in the user's own config still wins.
+    install -Dm644 "${srcdir}/kdeglobals" "${pkgdir}/etc/xdg/kdeglobals"
+
+    # Wallpaper, offered in System Settings.
+    install -Dm644 "${srcdir}/wallpaper.png" \
+        "${pkgdir}/usr/share/wallpapers/Jupiter/contents/images/2560x1440.png"
+    install -Dm644 "${srcdir}/wallpaper-preview.png" \
+        "${pkgdir}/usr/share/wallpapers/Jupiter/contents/screenshot.png"
+    install -Dm644 "${srcdir}/wallpaper-metadata.json" \
+        "${pkgdir}/usr/share/wallpapers/Jupiter/metadata.json"
+}

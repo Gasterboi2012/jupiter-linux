@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Minimal lsblk stand-in for installer tests."""
+
+import os
+import sys
+
+args = sys.argv[1:]
+joined = " ".join(args)
+
+if os.environ.get("STUB_LOG"):
+    with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as handle:
+        handle.write("lsblk " + joined + "\n")
+
+if "-dpno" in args or "-dpno" in joined:
+    print(os.environ.get("LSBLK_DISKS", ""), end="")
+elif "-dno" in joined and "MODEL" in joined:
+    print(os.environ.get("LSBLK_MODEL", "QEMU HARDDISK"))
+elif "-bno" in joined and "SIZE" in joined:
+    print(os.environ.get("LSBLK_BYTES", "68719476736"))
+elif "-nlo" in joined and "MOUNTPOINT" in joined:
+    pass
+elif "-no" in joined and "PKNAME" in joined:
+    pass
+
+sys.exit(0)

@@ -1,0 +1,12 @@
+# Generated archiso work, AUR checkouts, package repo and ISO output
+/build/
+/out/
+
+# Package build products
+packages/*/src/
+packages/*/pkg/
+packages/*/*.pkg.tar.*
+
+# Python bytecode
+__pycache__/
+*.py[cod]

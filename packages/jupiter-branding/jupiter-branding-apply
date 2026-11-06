@@ -1,0 +1,12 @@
+#!/bin/sh
+# Apply Jupiter branding to files owned by the Arch "filesystem" package.
+#
+# A package cannot ship /usr/lib/os-release or /etc/issue directly without
+# conflicting with filesystem, so jupiter-branding keeps its copies in
+# /usr/lib/jupiter and installs them here. This runs from the package
+# scriptlet and from a pacman hook after filesystem is installed or upgraded.
+
+set -eu
+
+install -m 644 /usr/lib/jupiter/os-release /usr/lib/os-release
+install -m 644 /usr/lib/jupiter/issue /etc/issue

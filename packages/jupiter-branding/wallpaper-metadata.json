@@ -1,0 +1,13 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Jupiter"
+            }
+        ],
+        "Description": "Jupiter placeholder wallpaper",
+        "Id": "Jupiter",
+        "License": "CC0-1.0",
+        "Name": "Jupiter"
+    }
+}

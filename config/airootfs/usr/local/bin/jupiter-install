@@ -1,0 +1,3 @@
+#!/bin/sh
+# Start the Jupiter installer.
+exec /usr/share/jupiter/installer/install.sh "$@"

@@ -1,0 +1,19 @@
+# Packages in the live ISO. This list is intentionally short: everything
+# needed to boot, reach the network and install, and nothing else.
+arch-install-scripts
+archlinux-keyring
+base
+dialog
+dosfstools
+e2fsprogs
+efibootmgr
+gptfdisk
+linux
+linux-firmware
+mkinitcpio-archiso
+networkmanager
+parted
+pciutils
+terminus-font
+wireless-regdb
+wpa_supplicant

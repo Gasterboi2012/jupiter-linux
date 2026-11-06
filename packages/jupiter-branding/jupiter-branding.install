@@ -1,0 +1,12 @@
+# shellcheck shell=bash
+
+post_install() {
+    # Branding is applied here rather than shipped directly, so the package
+    # does not fight the Arch "filesystem" package for /usr/lib/os-release
+    # and /etc/issue.
+    /usr/bin/jupiter-branding-apply || true
+}
+
+post_upgrade() {
+    post_install
+}

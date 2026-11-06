@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Minimal nmcli stand-in for installer tests.
+
+Behavior is driven by environment variables:
+  NM_WIFI_MODE=1   no connected ethernet, one wifi interface
+  NM_WIFI_LIST     raw "SSID:SIGNAL:SECURITY" lines (nmcli -t style)
+  ONLINE_FILE      touched when a wifi connection is "made"
+"""
+
+import os
+import pathlib
+import sys
+
+args = sys.argv[1:]
+joined = " ".join(args)
+
+log_path = os.environ.get("STUB_LOG")
+if log_path:
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write("nmcli " + joined + "\n")
+
+online_file = os.environ.get("ONLINE_FILE")
+wifi_mode = os.environ.get("NM_WIFI_MODE") == "1"
+
+if "device status" in joined:
+    if wifi_mode:
+        print("wlan0:wifi:disconnected")
+        print("eth0:ethernet:unavailable")
+    else:
+        print("eth0:ethernet:connected")
+elif "wifi list" in joined:
+    print(os.environ.get("NM_WIFI_LIST", ""), end="")
+elif "wifi rescan" in joined:
+    pass
+elif "wifi connect" in joined:
+    if online_file:
+        pathlib.Path(online_file).touch()
+
+sys.exit(0)
